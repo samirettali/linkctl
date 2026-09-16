@@ -126,6 +126,10 @@ func TestParseFlagsDoubleDash(t *testing.T) {
 		t.Errorf("positionals = %q, want a,-foo,--bar,--", got)
 	}
 	fs = newFlagSet("x")
+	if err := parseFlags(fs, []string{"--", "-foo"}); err != nil || strings.Join(fs.Args(), ",") != "-foo" {
+		t.Errorf("a dash term right after -- must be positional, got %v %q", err, fs.Args())
+	}
+	fs = newFlagSet("x")
 	if err := parseFlags(fs, []string{"-foo"}); err == nil {
 		t.Error("a dash term without -- must still be an unknown flag")
 	}

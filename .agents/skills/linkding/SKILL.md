@@ -42,7 +42,7 @@ linkctl bookmark list --added-since 7d --limit 0    # everything from the last w
 linkctl bookmark list --modified-since 2026-09-01T00:00:00Z
 ```
 
-`--added-since`/`--modified-since` take `24h`, `7d`, `2w` or an RFC 3339 timestamp. The default page is 50; `--limit 0` walks every page and returns everything in one answer with `next` null, `--offset` skips the first N results either way. A search term starting with a dash goes after `--`: `bookmark list -- -foo`. With several hundred results, group by tag and summarize per group rather than listing each item.
+`--added-since`/`--modified-since` take `24h`, `7d`, `2w` or an RFC 3339 timestamp. The default page is 50; `--limit 0` walks every page and returns everything in one answer with `next` null, `--offset` skips the first N results either way. A search term starting with a dash goes after `--`: `bookmark list -- -foo`. Everything after `--` is a search term, so put flags before it. With several hundred results, group by tag and summarize per group rather than listing each item.
 
 ## One bookmark
 

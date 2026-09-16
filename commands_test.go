@@ -113,6 +113,24 @@ func TestBookmarkFields(t *testing.T) {
 	}
 }
 
+func TestParseFlagsDoubleDash(t *testing.T) {
+	fs := newFlagSet("x")
+	full := fs.Bool("full", false, "")
+	if err := parseFlags(fs, []string{"--full", "a", "--", "-foo", "--bar", "--"}); err != nil {
+		t.Fatal(err)
+	}
+	if !*full {
+		t.Error("--full before -- was ignored")
+	}
+	if got := strings.Join(fs.Args(), ","); got != "a,-foo,--bar,--" {
+		t.Errorf("positionals = %q, want a,-foo,--bar,--", got)
+	}
+	fs = newFlagSet("x")
+	if err := parseFlags(fs, []string{"-foo"}); err == nil {
+		t.Error("a dash term without -- must still be an unknown flag")
+	}
+}
+
 func TestParseFlagsInterspersed(t *testing.T) {
 	fs := newFlagSet("x")
 	full := fs.Bool("full", false, "")

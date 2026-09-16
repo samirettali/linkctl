@@ -1,9 +1,11 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 )
@@ -54,6 +56,9 @@ func TestRequestErrors(t *testing.T) {
 		case "/api/invalid":
 			w.WriteHeader(400)
 			w.Write([]byte(`{"url":["Enter a valid URL."],"tag_names":["Tags may not contain spaces."]}`))
+		case "/api/collision":
+			w.WriteHeader(400)
+			w.Write([]byte(`{"url":"A bookmark with this URL already exists."}`))
 		case "/api/empty":
 			w.WriteHeader(204)
 		}
@@ -75,6 +80,10 @@ func TestRequestErrors(t *testing.T) {
 	if !errors.As(err, &apiErr) || apiErr.Status != 400 ||
 		apiErr.Details != "tag_names: Tags may not contain spaces., url: Enter a valid URL." {
 		t.Errorf("field errors should be flattened and sorted: %v", err)
+	}
+	_, err = client.request("PATCH", "/collision", nil, map[string]any{"url": "x"})
+	if !errors.As(err, &apiErr) || apiErr.Details != "url: A bookmark with this URL already exists." {
+		t.Errorf("string-valued field errors should be flattened too: %v", err)
 	}
 	data, err := client.request("DELETE", "/empty", nil, nil)
 	if err != nil || data != nil {
@@ -120,20 +129,82 @@ func TestListAllMergesPages(t *testing.T) {
 			t.Errorf("page requests must keep the filter and ask for %d: %s", pageSize, r.URL)
 		}
 		switch r.URL.Query().Get("offset") {
-		case "0":
-			w.Write([]byte(`{"count":3,"next":"http://x/api/bookmarks/?limit=100&offset=2","previous":null,"results":[{"id":1},{"id":2}]}`))
-		case "2":
-			w.Write([]byte(`{"count":3,"next":null,"previous":"http://x/api/bookmarks/?limit=100","results":[{"id":3}]}`))
+		case "5":
+			w.Write([]byte(`{"count":8,"next":"http://x/api/bookmarks/?limit=100&offset=7","previous":null,"results":[{"id":1},{"id":2}]}`))
+		case "7":
+			w.Write([]byte(`{"count":8,"next":null,"previous":"http://x/api/bookmarks/?limit=100","results":[{"id":3}]}`))
 		default:
 			t.Errorf("unexpected offset %s", r.URL.Query().Get("offset"))
 		}
 	})
-	p, err := listPage(client, "/bookmarks/", map[string][]string{"q": {"!unread"}}, 0, 0)
+	p, err := listPage(client, "/bookmarks/", map[string][]string{"q": {"!unread"}}, 0, 5)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p.Count != 3 || len(p.Results) != 3 || p.Next != nil || p.Previous != nil {
-		t.Errorf("pages not merged: count=%d results=%d next=%v", p.Count, len(p.Results), p.Next)
+	if p.Count != 8 || len(p.Results) != 3 || p.Next != nil || p.Previous != nil {
+		t.Errorf("pages not merged from the offset: count=%d results=%d next=%v", p.Count, len(p.Results), p.Next)
+	}
+}
+
+func TestAddAndUpdateRequests(t *testing.T) {
+	posted := false
+	client := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if r.Method != "GET" {
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decoding body: %v", err)
+			}
+		}
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/api/bookmarks/check/":
+			if r.URL.Query().Get("url") == "https://e/saved" {
+				w.Write([]byte(`{"bookmark":{"id":7,"url":"https://e/saved"},"metadata":{},"auto_tags":[]}`))
+				return
+			}
+			w.Write([]byte(`{"bookmark":null,"metadata":{},"auto_tags":[]}`))
+			return
+		case r.Method == "POST" && r.URL.Path == "/api/bookmarks/":
+			if body["url"] == "https://e/saved" {
+				posted = true
+				break
+			}
+			if r.URL.Query().Get("disable_scraping") != "true" {
+				t.Errorf("--no-scrape must send disable_scraping=true: %s", r.URL)
+			}
+			if body["url"] != "https://e/p" || body["unread"] != true || len(body) != 3 {
+				t.Errorf("add body = %v", body)
+			}
+			if tags, _ := body["tag_names"].([]any); len(tags) != 1 || tags[0] != "go" {
+				t.Errorf("add tags = %v", body["tag_names"])
+			}
+		case r.Method == "PATCH" && r.URL.Path == "/api/bookmarks/42/":
+			if body["notes"] != "n" || len(body) != 1 {
+				t.Errorf("update must send only the given fields: %v", body)
+			}
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL)
+		}
+		w.WriteHeader(201)
+		w.Write([]byte(`{"id":42,"url":"https://e/p","tag_names":["go"]}`))
+	})
+	t.Setenv("LINKDING_URL", client.baseURL)
+	t.Setenv("LINKDING_TOKEN", "secret")
+	quiet, _ := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+	stdout := os.Stdout
+	os.Stdout = quiet
+	t.Cleanup(func() { os.Stdout = stdout; quiet.Close() })
+	if err := run([]string{"bookmark", "add", "https://e/p", "--tag", "go", "--unread", "--no-scrape"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run([]string{"bookmark", "update", "42", "--notes", "n"}); err != nil {
+		t.Fatal(err)
+	}
+	err := run([]string{"bookmark", "add", "https://e/saved"})
+	if err == nil || !strings.Contains(err.Error(), "already bookmark 7") || posted {
+		t.Errorf("add on a saved URL must refuse before posting, got %v (posted=%v)", err, posted)
+	}
+	if err := run([]string{"bookmark", "add", "https://e/saved", "--replace"}); err != nil || !posted {
+		t.Errorf("--replace must post through, got %v (posted=%v)", err, posted)
 	}
 }
 

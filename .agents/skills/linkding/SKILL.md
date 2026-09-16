@@ -18,7 +18,7 @@ bookmark  {id, url, title, description?, notes?, tag_names, unread, is_archived,
 tag       {id, name, date_added}
 ```
 
-`--full` on `bookmark list|get|check|add|update` returns linkding's objects verbatim, adding the favicon, preview image and web archive URLs. Do not use it unless the task needs one of those.
+`--full` on `bookmark list|get|check|add|update` returns linkding's objects verbatim, adding the favicon, preview image and web archive URLs plus the deprecated, always-null `website_title`/`website_description`. Do not use it unless the task needs one of those.
 
 ## Authentication
 
@@ -42,7 +42,7 @@ linkctl bookmark list --added-since 7d --limit 0    # everything from the last w
 linkctl bookmark list --modified-since 2026-09-01T00:00:00Z
 ```
 
-`--added-since`/`--modified-since` take `24h`, `7d`, `2w` or an RFC 3339 timestamp. The default page is 50; `--limit 0` walks every page and returns everything in one answer with `next` null, `--offset` moves within a fixed `--limit`. With several hundred results, group by tag and summarize per group rather than listing each item.
+`--added-since`/`--modified-since` take `24h`, `7d`, `2w` or an RFC 3339 timestamp. The default page is 50; `--limit 0` walks every page and returns everything in one answer with `next` null, `--offset` skips the first N results either way. A search term starting with a dash goes after `--`: `bookmark list -- -foo`. With several hundred results, group by tag and summarize per group rather than listing each item.
 
 ## One bookmark
 
@@ -51,7 +51,7 @@ linkctl bookmark get 412
 linkctl bookmark check https://example.com/post
 ```
 
-`check` answers `{"bookmark", "metadata", "auto_tags"}`: `bookmark` is the saved one or null; when null, `metadata` holds the scraped title and description and `auto_tags` the tags linkding would apply on its own. Run it before `add` to avoid a duplicate.
+`check` answers `{"bookmark", "metadata", "auto_tags"}`: `bookmark` is the saved one or null; when null, `metadata` holds the scraped title and description and `auto_tags` the tags linkding would apply on its own. linkding scrapes the page live to answer, so a slow or unreachable site makes `check` slow; it is not a hang.
 
 ## Save and edit
 
@@ -64,7 +64,7 @@ linkctl bookmark archive 412 413
 linkctl bookmark unarchive 412
 ```
 
-`add` scrapes the page for title and description unless `--no-scrape` is given, and answers the trimmed bookmark. `update` sends only the flags given, but **`--tag` replaces the whole tag list**: read the bookmark first and repeat the tags to keep. `--unread`/`--no-unread` and `--shared`/`--no-shared` set the flag either way; neither leaves it alone.
+`add` scrapes the page for title and description unless `--no-scrape` is given, and answers the trimmed bookmark. **A URL that is already saved is refused**, with the existing ID in the error: change it with `update`. `--replace` forces the save, and linkding then overwrites title, description, notes, unread and shared with what was sent and replaces the tag list, so only use it when that is the intent. `update` sends only the flags given, but **`--tag` replaces the whole tag list**: read the bookmark first and repeat the tags to keep. `--unread`/`--no-unread` and `--shared`/`--no-shared` set the flag either way; neither leaves it alone.
 
 `archive`, `unarchive` and `delete` take several IDs and answer `{"archived"|"unarchived"|"deleted": [ids], "failed": [{"id", "error"}]}`; they go on past a per-bookmark failure, so report `failed` whenever it is non-empty. Take IDs from a previous `list`, `get` or `check`, never from memory.
 

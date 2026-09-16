@@ -39,9 +39,13 @@ are deliberately left for later.
   Tags are already small and pass through as they are.
 - **`--limit 0` walks the collection client-side.** linkding has no uncapped mode, so pages of
   100 are fetched until `next` is null and merged under the server's `count`, with `next` and
-  `previous` null in the answer. An explicit `--limit` is one request, `--offset` moves within it.
+  `previous` null in the answer. An explicit `--limit` is one request. `--offset` is where the
+  walk or the page starts in both cases; a first version silently dropped it on `--limit 0`.
 - Search is composed into linkding's own `q` syntax: free terms, `#tag` per `--tag`, `!unread`,
-  `!untagged`. `--archived` switches the path to `/bookmarks/archived/`, a separate collection.
+  `!untagged`. Both keywords are understood by the current parser and the legacy one
+  (`bookmarks/queries.py` on 1.45.0), so the `unread=yes` query parameter is not needed and
+  `!untagged` has no parameter form anyway. `--archived` switches the path to
+  `/bookmarks/archived/`, a separate collection.
 - `--added-since`/`--modified-since` accept `24h`, `7d`, `2w` or RFC 3339 and are sent as
   RFC 3339 in UTC (`added_since`/`modified_since`).
 - **Configuration comes from `LINKDING_URL` and `LINKDING_TOKEN`, with the rbw entry
@@ -62,6 +66,13 @@ are deliberately left for later.
   an empty PATCH.
 - `add` takes the URL as a positional and has no `--url`; `update` has `--url` to move a
   bookmark. `--no-scrape` sends `disable_scraping=true` in the query, where linkding reads it.
+- **`add` refuses a URL that is already saved unless `--replace` is given.** linkding's
+  `create_bookmark` (`bookmarks/services/bookmarks.py` on 1.45.0) finds the existing bookmark
+  by URL, copies title, description, notes, unread and shared from the request as they are,
+  replaces the tag list, and still answers 201, so an agent re-saving a link would silently
+  wipe notes and tags. `add` calls `/bookmarks/check/` first and fails naming the existing ID
+  and pointing at `update`; that costs one request and a server-side scrape per `add`, which
+  is the price of not losing data. `--replace` skips the check and keeps linkding's merge.
 - **`delete`, `archive` and `unarchive` are one request per ID.** linkding answers 204 to all
   three. The answer is `{"<done>": [ids], "failed": [{id, error}]}` with `<done>` being
   `deleted`, `archived` or `unarchived`; one failure does not abort the rest, except an
@@ -69,9 +80,13 @@ are deliberately left for later.
   caller gets the `fix` on stderr and a non-zero exit. Archiving an archived bookmark is a 204,
   not an error.
 - `check` returns `{"bookmark", "metadata", "auto_tags"}` with `bookmark` trimmed when present
-  and `metadata` passed through verbatim.
+  and `metadata` passed through verbatim. linkding scrapes the URL server-side to fill
+  `metadata`, so the call takes as long as the target site does.
 - Flags may come before or after positional arguments (`parseFlags` re-parses after each
   positional), because agents write `bookmark get 42 --full` as often as the other way round.
+  Everything after `--` is positional verbatim, so a search term starting with a dash is
+  reachable (`bookmark list -- -foo`); fluxctl's version lost that because its final re-parse
+  saw the term as a flag, and there positionals are only IDs.
 - `-h`/`--help`/`help` on a group (`bookmark --help`) or a leaf (`bookmark list -h`) prints the
   usage to stderr and exits 0 (`errHelp`). Every command rejects stray positionals, so a
   mistyped flag cannot pass silently.

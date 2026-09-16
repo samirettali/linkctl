@@ -21,8 +21,17 @@ func newFlagSet(name string) *flag.FlagSet {
 
 // parseFlags accepts flags before and after positional arguments, so `bookmark get 42 --full`
 // works as well as `bookmark get --full 42`. The positionals end up in fs.Args() in order.
+// Everything after a `--` is positional verbatim, so a search term starting with a dash
+// can be passed as `bookmark list -- -foo`.
 func parseFlags(fs *flag.FlagSet, args []string) error {
-	var positional []string
+	var positional, verbatim []string
+	for i, arg := range args {
+		if arg == "--" {
+			verbatim = args[i+1:]
+			args = args[:i]
+			break
+		}
+	}
 	for {
 		if err := fs.Parse(args); err != nil {
 			if errors.Is(err, flag.ErrHelp) {
@@ -37,7 +46,8 @@ func parseFlags(fs *flag.FlagSet, args []string) error {
 		positional = append(positional, rest[0])
 		args = rest[1:]
 	}
-	return fs.Parse(positional)
+	positional = append(positional, verbatim...)
+	return fs.Parse(append([]string{"--"}, positional...))
 }
 
 // errHelp is returned when a subcommand gets -h/--help; main prints the usage and exits 0.
@@ -149,11 +159,10 @@ func parseDuration(value string) (time.Duration, error) {
 // pageSize is what one request asks for when --limit 0 walks the whole collection.
 const pageSize = 100
 
-// listAll walks a paginated endpoint with limit/offset until the server has no next page,
-// merging the results under the server's count. linkding has no uncapped mode.
-func listAll(client *linkdingClient, path string, query url.Values) (page, error) {
+// listAll walks a paginated endpoint with limit/offset from the given offset until the server
+// has no next page, merging the results under the server's count. linkding has no uncapped mode.
+func listAll(client *linkdingClient, path string, query url.Values, offset int) (page, error) {
 	merged := page{Results: []json.RawMessage{}}
-	offset := 0
 	for {
 		q := url.Values{}
 		for k, v := range query {
@@ -181,7 +190,7 @@ func listAll(client *linkdingClient, path string, query url.Values) (page, error
 // listPage fetches one page, or everything when limit is 0.
 func listPage(client *linkdingClient, path string, query url.Values, limit, offset int) (page, error) {
 	if limit == 0 {
-		return listAll(client, path, query)
+		return listAll(client, path, query, offset)
 	}
 	q := url.Values{}
 	for k, v := range query {
@@ -460,10 +469,14 @@ func (f bookmarkFields) body() map[string]any {
 	return body
 }
 
+// runBookmarkAdd refuses a URL that is already saved unless --replace is given: linkding's
+// POST merges into the existing bookmark (title, description, notes, unread, shared are
+// overwritten and the tag list replaced) and still answers 201, so nothing else would tell.
 func runBookmarkAdd(args []string) error {
 	fs := newFlagSet("bookmark add")
 	fields := bindBookmarkFields(fs, false)
 	noScrape := fs.Bool("no-scrape", false, "do not fetch title and description from the page")
+	replace := fs.Bool("replace", false, "overwrite the bookmark if the URL is already saved")
 	full := fs.Bool("full", false, "return linkding's own object")
 	if err := parseFlags(fs, args); err != nil {
 		return err
@@ -485,11 +498,32 @@ func runBookmarkAdd(args []string) error {
 	if err != nil {
 		return err
 	}
+	if !*replace {
+		if err := refuseExisting(client, fs.Arg(0)); err != nil {
+			return err
+		}
+	}
 	data, err := client.request("POST", "/bookmarks/", query, body)
 	if err != nil {
 		return err
 	}
 	return writeBookmark(data, *full)
+}
+
+func refuseExisting(client *linkdingClient, target string) error {
+	data, err := client.request("GET", "/bookmarks/check/", url.Values{"url": {target}}, nil)
+	if err != nil {
+		return err
+	}
+	result, err := decodeCheck(data)
+	if err != nil {
+		return err
+	}
+	if result.Bookmark != nil {
+		return fmt.Errorf("bookmark add: %s is already bookmark %d; use 'bookmark update %d' to change it, or --replace to overwrite its fields and tags",
+			target, result.Bookmark.ID, result.Bookmark.ID)
+	}
+	return nil
 }
 
 func runBookmarkUpdate(args []string) error {

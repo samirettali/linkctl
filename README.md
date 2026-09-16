@@ -27,7 +27,7 @@ linkctl bookmark list [QUERY...] [--tag TAG]... [--unread] [--untagged] [--archi
 linkctl bookmark get ID
 linkctl bookmark check URL
 linkctl bookmark add URL [--title S] [--description S] [--notes S] [--tag TAG]...
-                         [--unread|--no-unread] [--shared|--no-shared] [--no-scrape]
+                         [--unread|--no-unread] [--shared|--no-shared] [--no-scrape] [--replace]
 linkctl bookmark update ID [--url S] [--title S] [--description S] [--notes S] [--tag TAG]...
                            [--unread|--no-unread] [--shared|--no-shared]
 linkctl bookmark delete ID...
@@ -36,6 +36,6 @@ linkctl bookmark unarchive ID...
 linkctl tag list [--limit N] [--offset N]
 ```
 
-Lists keep linkding's `{"count", "next", "previous", "results"}` envelope with the objects inside trimmed; `--full` on `bookmark list`, `get`, `check`, `add` and `update` returns linkding's own objects. `--limit 0` fetches every page and returns everything in one answer. `update --tag` replaces the whole tag list. `delete`, `archive` and `unarchive` take several IDs and report per-ID failures without aborting.
+Lists keep linkding's `{"count", "next", "previous", "results"}` envelope with the objects inside trimmed; `--full` on `bookmark list`, `get`, `check`, `add` and `update` returns linkding's own objects. `--limit 0` fetches every page and returns everything in one answer. `add` refuses a URL that is already saved, naming the existing ID, unless `--replace` is given: linkding would otherwise merge into it and overwrite its fields. `update --tag` replaces the whole tag list. `delete`, `archive` and `unarchive` take several IDs and report per-ID failures without aborting.
 
 The agent skill lives in `.agents/skills/linkding`.

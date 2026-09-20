@@ -41,6 +41,9 @@ are deliberately left for later.
   100 are fetched until `next` is null and merged under the server's `count`, with `next` and
   `previous` null in the answer. An explicit `--limit` is one request. `--offset` is where the
   walk or the page starts in both cases; a first version silently dropped it on `--limit 0`.
+  The client computes offsets locally and never fetches the server's `next` URL. Missing
+  envelope fields, empty pages with `next`, exhausted counts with `next`, and repeated pages
+  are errors, not partial success. Successful responses and whole libraries have no size cap.
 - Search is composed into linkding's own `q` syntax: free terms, `#tag` per `--tag`, `!unread`,
   `!untagged`. Both keywords are understood by the current parser and the legacy one
   (`bookmarks/queries.py` on 1.45.0), so the `unread=yes` query parameter is not needed and
@@ -51,16 +54,23 @@ are deliberately left for later.
 - **Configuration comes from `LINKDING_URL` and `LINKDING_TOKEN`, with the rbw entry
   `linkding-api-key` as the fallback** (password = token, first URI = base URL). The variable is
   called a token because linkding does and the header is `Authorization: Token …`. The fallback
-  never prompts: a locked vault is an error whose `fix` says to unlock it.
+  never prompts: a locked vault is an error whose details say to unlock it. The two rbw
+  commands share a 10-second deadline, with at most one extra second waiting for inherited
+  output pipes. Vault failure output is never echoed.
 - **Errors carry their own remedy.** Missing configuration and a 401 both render as
   `{"error", "fix", "details"}`, so no caller needs a status check first. `authError` wraps the
   `APIError`, so `errors.As` still reaches the status code.
 - linkding's error bodies are Django REST framework's: `{"detail": "..."}` or per-field
   `{"url": ["..."]}`. Both are flattened into one `details` line, fields sorted by name.
-  Non-JSON bodies (a proxy's 502 page) are kept truncated to 300 characters.
+  Only the first 16 KiB of an HTTP error body is read; HTTP status and the 401 remedy survive
+  truncated or unreadable error bodies. Non-JSON bodies (a proxy's 502 page) are kept truncated
+  to 300 characters. Nonempty successful responses must contain valid JSON, and bookmark/tag
+  objects must have positive IDs, including in `--full` responses.
 - `add` and `update` share one flag set. A field is sent only when its flag was given, so an
   explicit `--title ''` clears the title and an absent one leaves it alone. `--unread` and
-  `--shared` are tri-state through `--no-unread`/`--no-shared`; both at once is an error.
+  `--shared` are tri-state through `--no-unread`/`--no-shared`; both names at once is an error,
+  regardless of their values. Explicit values follow Go's boolean flag syntax:
+  `--unread=false` sends false and `--no-unread=false` sends true (likewise for shared).
   `--tag` replaces the whole list on `update`, because that is what `PATCH` with `tag_names`
   does; the skill tells agents to read first. `update` with no field is an error rather than
   an empty PATCH.
@@ -73,6 +83,9 @@ are deliberately left for later.
   wipe notes and tags. `add` calls `/bookmarks/check/` first and fails naming the existing ID
   and pointing at `update`; that costs one request and a server-side scrape per `add`, which
   is the price of not losing data. `--replace` skips the check and keeps linkding's merge.
+  Only an explicit `bookmark: null` in a valid check response permits the save; missing fields
+  and malformed objects fail closed. The check and POST are not atomic, so a concurrent save
+  can still race this guard.
 - **`delete`, `archive` and `unarchive` are one request per ID.** linkding answers 204 to all
   three. The answer is `{"<done>": [ids], "failed": [{id, error}]}` with `<done>` being
   `deleted`, `archived` or `unarchived`; one failure does not abort the rest, except an
@@ -87,8 +100,13 @@ are deliberately left for later.
   Everything after `--` is positional verbatim, so a search term starting with a dash is
   reachable (`bookmark list -- -foo`); fluxctl's version lost that because its final re-parse
   saw the term as a flag, and there positionals are only IDs.
-- `-h`/`--help`/`help` on a group (`bookmark --help`) or a leaf (`bookmark list -h`) prints the
-  usage to stderr and exits 0 (`errHelp`). Every command rejects stray positionals, so a
+- `-h`/`--help` on a group (`bookmark --help`) or a leaf (`bookmark list -h`), and `help` on
+  a group, print the usage to stderr and exit 0 (`errHelp`). Every command rejects stray
+  positionals, so a
   mistyped flag cannot pass silently.
-- `LINKDING_URL` must be `http(s)://host`; requests go to `<url>/api/...`.
+- `LINKDING_URL` must be `http(s)://host` with an optional path prefix; requests go to
+  `<url>/api/...`. User info, queries and fragments are rejected without echoing the URL.
+  HTTP calls time out after 60 seconds. Redirects are limited to 10 hops and must keep the
+  original scheme, host, port and method, with no URL credentials. Malformed or rejected
+  redirect locations are not included in errors, since they can contain secrets.
 - Tags cannot be deleted through the API, so a smoke test that creates one leaves it behind.

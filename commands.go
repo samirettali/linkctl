@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -24,29 +25,34 @@ func newFlagSet(name string) *flag.FlagSet {
 // Everything after a `--` is positional verbatim, so a search term starting with a dash
 // can be passed as `bookmark list -- -foo`.
 func parseFlags(fs *flag.FlagSet, args []string) error {
-	var positional, verbatim []string
-	for i, arg := range args {
-		if arg == "--" {
-			verbatim = args[i+1:]
-			args = args[:i]
+	var positional []string
+	for len(args) > 0 {
+		if args[0] == "--" {
+			positional = append(positional, args[1:]...)
 			break
 		}
-	}
-	for {
-		if err := fs.Parse(args); err != nil {
+		if args[0] == "-" || !strings.HasPrefix(args[0], "-") {
+			positional = append(positional, args[0])
+			args = args[1:]
+			continue
+		}
+		// Parse a flag with its value as one unit: a string value may itself be --.
+		n := 1
+		name, _, hasValue := strings.Cut(strings.TrimPrefix(strings.TrimPrefix(args[0], "-"), "-"), "=")
+		if fl := fs.Lookup(name); fl != nil && !hasValue {
+			boolean, ok := fl.Value.(interface{ IsBoolFlag() bool })
+			if (!ok || !boolean.IsBoolFlag()) && len(args) > 1 {
+				n = 2
+			}
+		}
+		if err := fs.Parse(args[:n]); err != nil {
 			if errors.Is(err, flag.ErrHelp) {
 				return errHelp
 			}
 			return fmt.Errorf("%s: %w", fs.Name(), err)
 		}
-		rest := fs.Args()
-		if len(rest) == 0 {
-			break
-		}
-		positional = append(positional, rest[0])
-		args = rest[1:]
+		args = args[n:]
 	}
-	positional = append(positional, verbatim...)
 	return fs.Parse(append([]string{"--"}, positional...))
 }
 
@@ -100,23 +106,30 @@ func (l *stringList) Set(v string) error { *l = append(*l, v); return nil }
 type triState struct {
 	name    string
 	on, off bool
+	fs      *flag.FlagSet
 }
 
 func (t *triState) bind(fs *flag.FlagSet, usage string) {
+	t.fs = fs
 	fs.BoolVar(&t.on, t.name, false, usage)
 	fs.BoolVar(&t.off, "no-"+t.name, false, "un"+usage)
 }
 
 func (t *triState) value(command string) (*bool, error) {
-	if t.on && t.off {
+	var onGiven, offGiven bool
+	t.fs.Visit(func(fl *flag.Flag) {
+		onGiven = onGiven || fl.Name == t.name
+		offGiven = offGiven || fl.Name == "no-"+t.name
+	})
+	if onGiven && offGiven {
 		return nil, fmt.Errorf("%s: --%s and --no-%s are exclusive", command, t.name, t.name)
 	}
-	if t.on {
-		v := true
+	if onGiven {
+		v := t.on
 		return &v, nil
 	}
-	if t.off {
-		v := false
+	if offGiven {
+		v := !t.off
 		return &v, nil
 	}
 	return nil, nil
@@ -139,15 +152,15 @@ func parseTime(value string, now time.Time) (string, error) {
 
 func parseDuration(value string) (time.Duration, error) {
 	if strings.HasSuffix(value, "d") || strings.HasSuffix(value, "w") {
-		n, err := strconv.Atoi(value[:len(value)-1])
-		if err != nil || n < 0 {
+		n, err := strconv.ParseInt(value[:len(value)-1], 10, 64)
+		unit := 24 * time.Hour
+		if strings.HasSuffix(value, "w") {
+			unit *= 7
+		}
+		if err != nil || n < 0 || n > int64((1<<63-1)/unit) {
 			return 0, fmt.Errorf("invalid duration %q", value)
 		}
-		days := n
-		if strings.HasSuffix(value, "w") {
-			days *= 7
-		}
-		return time.Duration(days) * 24 * time.Hour, nil
+		return time.Duration(n) * unit, nil
 	}
 	d, err := time.ParseDuration(value)
 	if err != nil || d < 0 {
@@ -163,6 +176,7 @@ const pageSize = 100
 // has no next page, merging the results under the server's count. linkding has no uncapped mode.
 func listAll(client *linkdingClient, path string, query url.Values, offset int) (page, error) {
 	merged := page{Results: []json.RawMessage{}}
+	seenPages := map[[sha256.Size]byte]bool{}
 	for {
 		q := url.Values{}
 		for k, v := range query {
@@ -178,10 +192,27 @@ func listAll(client *linkdingClient, path string, query url.Values, offset int) 
 		if err != nil {
 			return page{}, err
 		}
+		if len(p.Results) > 0 {
+			// A server that ignores offset can otherwise repeat a page forever.
+			hash := sha256.New()
+			for _, raw := range p.Results {
+				hash.Write(raw)
+				hash.Write([]byte{0})
+			}
+			var fingerprint [sha256.Size]byte
+			copy(fingerprint[:], hash.Sum(nil))
+			if seenPages[fingerprint] {
+				return page{}, fmt.Errorf("decoding %s: repeated page while advancing offset", path)
+			}
+			seenPages[fingerprint] = true
+		}
 		merged.Count = p.Count
 		merged.Results = append(merged.Results, p.Results...)
-		if p.Next == nil || len(p.Results) == 0 {
+		if p.Next == nil {
 			return merged, nil
+		}
+		if len(p.Results) == 0 || offset >= p.Count || len(p.Results) >= p.Count-offset {
+			return page{}, fmt.Errorf("decoding %s: next page without progress within count", path)
 		}
 		offset += len(p.Results)
 	}
@@ -323,12 +354,12 @@ func runBookmarkList(args []string) error {
 	if err != nil {
 		return err
 	}
-	if *full {
-		return writeJSON(p)
-	}
 	trimmed, err := trimBookmarkPage(p)
 	if err != nil {
 		return err
+	}
+	if *full {
+		return writeJSON(p)
 	}
 	return writeJSON(trimmed)
 }
@@ -355,12 +386,12 @@ func runBookmarkGet(args []string) error {
 }
 
 func writeBookmark(data json.RawMessage, full bool) error {
-	if full {
-		return writeJSON(data)
-	}
 	b, err := decodeBookmark(data)
 	if err != nil {
 		return err
+	}
+	if full {
+		return writeJSON(data)
 	}
 	return writeJSON(b)
 }
@@ -382,12 +413,12 @@ func runBookmarkCheck(args []string) error {
 	if err != nil {
 		return err
 	}
-	if *full {
-		return writeJSON(data)
-	}
 	result, err := decodeCheck(data)
 	if err != nil {
 		return err
+	}
+	if *full {
+		return writeJSON(data)
 	}
 	return writeJSON(result)
 }

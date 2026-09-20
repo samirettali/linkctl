@@ -240,12 +240,16 @@ func listPage(client *linkdingClient, path string, query url.Values, limit, offs
 
 func runBookmark(args []string) error {
 	if len(args) == 0 {
-		return errors.New("bookmark: subcommand required (list, get, check, add, update, delete, archive, unarchive)")
+		return errors.New("bookmark: subcommand required (list, get, check, add, update, delete, archive, unarchive, asset, singlefile)")
 	}
 	if isHelp(args[0]) {
 		return errHelp
 	}
 	switch args[0] {
+	case "asset":
+		return runAsset(args[1:])
+	case "singlefile":
+		return runSinglefile(args[1:])
 	case "list":
 		return runBookmarkList(args[1:])
 	case "get":
@@ -268,15 +272,18 @@ func runBookmark(args []string) error {
 }
 
 type bookmarkListOptions struct {
-	terms         []string
-	tags          []string
-	unread        bool
-	untagged      bool
-	archived      bool
-	addedSince    string
-	modifiedSince string
-	limit         int
-	offset        int
+	terms                                  []string
+	tags                                   []string
+	unread                                 bool
+	untagged                               bool
+	archived                               bool
+	sharedCollection                       bool
+	user, sort, filterShared, filterUnread string
+	bundle                                 int64
+	addedSince                             string
+	modifiedSince                          string
+	limit                                  int
+	offset                                 int
 }
 
 // searchQuery composes linkding's search syntax: free terms, #tag per --tag, !unread, !untagged.
@@ -295,6 +302,9 @@ func (o bookmarkListOptions) searchQuery() string {
 }
 
 func (o bookmarkListOptions) path() string {
+	if o.sharedCollection {
+		return "/bookmarks/shared/"
+	}
 	if o.archived {
 		return "/bookmarks/archived/"
 	}
@@ -305,7 +315,39 @@ func (o bookmarkListOptions) query(now time.Time) (url.Values, error) {
 	if o.limit < 0 || o.offset < 0 {
 		return nil, errors.New("bookmark list: --limit and --offset must be >= 0")
 	}
+	if o.archived && o.sharedCollection {
+		return nil, errors.New("bookmark list: --archived and --shared-collection are exclusive")
+	}
+	if o.user != "" && !o.sharedCollection {
+		return nil, errors.New("bookmark list: --user requires --shared-collection")
+	}
+	if o.bundle < 0 {
+		return nil, errors.New("bookmark list: --bundle must be a positive ID")
+	}
+	if o.sort != "" && o.sort != "added_asc" && o.sort != "added_desc" && o.sort != "modified_asc" && o.sort != "modified_desc" && o.sort != "title_asc" && o.sort != "title_desc" {
+		return nil, errors.New("bookmark list: invalid --sort")
+	}
+	if o.unread && o.filterUnread != "" {
+		return nil, errors.New("bookmark list: --unread and --filter-unread are exclusive")
+	}
 	q := url.Values{}
+	for _, f := range []struct{ name, value string }{{"shared", o.filterShared}, {"unread", o.filterUnread}} {
+		if f.value != "" {
+			if f.value != "off" && f.value != "yes" && f.value != "no" {
+				return nil, fmt.Errorf("bookmark list: --filter-%s must be off, yes or no", f.name)
+			}
+			q.Set(f.name, f.value)
+		}
+	}
+	if o.user != "" {
+		q.Set("user", o.user)
+	}
+	if o.sort != "" {
+		q.Set("sort", o.sort)
+	}
+	if o.bundle > 0 {
+		q.Set("bundle", strconv.FormatInt(o.bundle, 10))
+	}
 	if search := o.searchQuery(); search != "" {
 		q.Set("q", search)
 	}
@@ -332,6 +374,12 @@ func runBookmarkList(args []string) error {
 	fs.BoolVar(&o.unread, "unread", false, "only unread bookmarks")
 	fs.BoolVar(&o.untagged, "untagged", false, "only bookmarks without tags")
 	fs.BoolVar(&o.archived, "archived", false, "search the archive instead")
+	fs.BoolVar(&o.sharedCollection, "shared-collection", false, "read the shared bookmark collection")
+	fs.StringVar(&o.user, "user", "", "shared collection owner username")
+	fs.StringVar(&o.sort, "sort", "", "added_asc, added_desc, modified_asc, modified_desc, title_asc, title_desc")
+	fs.StringVar(&o.filterShared, "filter-shared", "", "off, yes or no")
+	fs.StringVar(&o.filterUnread, "filter-unread", "", "off, yes or no")
+	fs.Int64Var(&o.bundle, "bundle", 0, "filter by bundle ID")
 	fs.StringVar(&o.addedSince, "added-since", "", "bookmarks added after this duration ago or RFC 3339 time")
 	fs.StringVar(&o.modifiedSince, "modified-since", "", "bookmarks modified after this duration ago or RFC 3339 time")
 	fs.IntVar(&o.limit, "limit", 50, "page size, 0 for everything")
@@ -339,6 +387,15 @@ func runBookmarkList(args []string) error {
 	full := fs.Bool("full", false, "return linkding's own objects")
 	if err := parseFlags(fs, args); err != nil {
 		return err
+	}
+	var bundleGiven bool
+	fs.Visit(func(fl *flag.Flag) {
+		if fl.Name == "bundle" {
+			bundleGiven = true
+		}
+	})
+	if bundleGiven && o.bundle <= 0 {
+		return errors.New("bookmark list: --bundle must be a positive ID")
 	}
 	o.terms = fs.Args()
 	o.tags = tags
@@ -398,6 +455,7 @@ func writeBookmark(data json.RawMessage, full bool) error {
 
 func runBookmarkCheck(args []string) error {
 	fs := newFlagSet("bookmark check")
+	ignoreCache := fs.Bool("ignore-cache", false, "refresh cached website metadata")
 	full := fs.Bool("full", false, "return linkding's own object")
 	if err := parseFlags(fs, args); err != nil {
 		return err
@@ -409,7 +467,11 @@ func runBookmarkCheck(args []string) error {
 	if err != nil {
 		return err
 	}
-	data, err := client.request("GET", "/bookmarks/check/", url.Values{"url": {fs.Arg(0)}}, nil)
+	query := url.Values{"url": {fs.Arg(0)}}
+	if *ignoreCache {
+		query.Set("ignore_cache", "true")
+	}
+	data, err := client.request("GET", "/bookmarks/check/", query, nil)
 	if err != nil {
 		return err
 	}
@@ -427,15 +489,18 @@ func runBookmarkCheck(args []string) error {
 type bookmarkFields struct {
 	url, title, description, notes *string
 	tags                           []string
-	unread, shared                 *bool
+	unread, shared, archived       *bool
+	dateAdded, dateModified        *string
 }
 
 func bindBookmarkFields(fs *flag.FlagSet, withURL bool) func(command string) (bookmarkFields, error) {
 	var f bookmarkFields
-	var u, title, description, notes string
+	var u, title, description, notes, dateAdded, dateModified string
+	clearTags := fs.Bool("clear-tags", false, "replace tags with an empty list (auto-tagging may reapply tags)")
 	var tags stringList
 	unread := &triState{name: "unread"}
 	shared := &triState{name: "shared"}
+	archived := &triState{name: "archived"}
 	if withURL {
 		fs.StringVar(&u, "url", "", "new URL")
 	}
@@ -445,6 +510,9 @@ func bindBookmarkFields(fs *flag.FlagSet, withURL bool) func(command string) (bo
 	fs.Var(&tags, "tag", "tag; repeatable, replaces the whole list on update")
 	unread.bind(fs, "mark as unread")
 	shared.bind(fs, "mark as shared")
+	archived.bind(fs, "mark as archived")
+	fs.StringVar(&dateAdded, "date-added", "", "date added, RFC 3339")
+	fs.StringVar(&dateModified, "date-modified", "", "date modified, RFC 3339")
 	return func(command string) (bookmarkFields, error) {
 		given := map[string]bool{}
 		fs.Visit(func(fl *flag.Flag) { given[fl.Name] = true })
@@ -463,11 +531,33 @@ func bindBookmarkFields(fs *flag.FlagSet, withURL bool) func(command string) (bo
 		if given["tag"] {
 			f.tags = tags
 		}
+		if *clearTags {
+			if given["tag"] {
+				return f, fmt.Errorf("%s: --tag and --clear-tags are exclusive", command)
+			}
+			f.tags = []string{}
+		}
+		for _, field := range []struct {
+			name, value string
+			target      **string
+		}{{"date-added", dateAdded, &f.dateAdded}, {"date-modified", dateModified, &f.dateModified}} {
+			if given[field.name] {
+				t, err := time.Parse(time.RFC3339, field.value)
+				if err != nil {
+					return f, fmt.Errorf("%s: --%s requires RFC 3339", command, field.name)
+				}
+				v := t.UTC().Format(time.RFC3339Nano)
+				*field.target = &v
+			}
+		}
 		var err error
 		if f.unread, err = unread.value(command); err != nil {
 			return f, err
 		}
 		if f.shared, err = shared.value(command); err != nil {
+			return f, err
+		}
+		if f.archived, err = archived.value(command); err != nil {
 			return f, err
 		}
 		return f, nil
@@ -497,6 +587,15 @@ func (f bookmarkFields) body() map[string]any {
 	if f.shared != nil {
 		body["shared"] = *f.shared
 	}
+	if f.archived != nil {
+		body["is_archived"] = *f.archived
+	}
+	if f.dateAdded != nil {
+		body["date_added"] = *f.dateAdded
+	}
+	if f.dateModified != nil {
+		body["date_modified"] = *f.dateModified
+	}
 	return body
 }
 
@@ -507,6 +606,7 @@ func runBookmarkAdd(args []string) error {
 	fs := newFlagSet("bookmark add")
 	fields := bindBookmarkFields(fs, false)
 	noScrape := fs.Bool("no-scrape", false, "do not fetch title and description from the page")
+	noSnapshot := fs.Bool("no-snapshot", false, "disable automatic HTML snapshot creation")
 	replace := fs.Bool("replace", false, "overwrite the bookmark if the URL is already saved")
 	full := fs.Bool("full", false, "return linkding's own object")
 	if err := parseFlags(fs, args); err != nil {
@@ -521,9 +621,12 @@ func runBookmarkAdd(args []string) error {
 	}
 	body := f.body()
 	body["url"] = fs.Arg(0)
-	var query url.Values
+	query := url.Values{}
 	if *noScrape {
-		query = url.Values{"disable_scraping": {"true"}}
+		query.Set("disable_scraping", "true")
+	}
+	if *noSnapshot {
+		query.Set("disable_html_snapshot", "true")
 	}
 	client, err := newLinkdingClient()
 	if err != nil {
@@ -670,41 +773,4 @@ func isAuthError(err error) bool {
 	return errors.As(err, &authErr)
 }
 
-func runTag(args []string) error {
-	if len(args) == 0 {
-		return errors.New("tag: subcommand required (list)")
-	}
-	if isHelp(args[0]) {
-		return errHelp
-	}
-	switch args[0] {
-	case "list":
-		fs := newFlagSet("tag list")
-		limit := fs.Int("limit", 200, "page size, 0 for everything")
-		offset := fs.Int("offset", 0, "page offset")
-		if err := parseFlags(fs, args[1:]); err != nil {
-			return err
-		}
-		if err := noArgs(fs); err != nil {
-			return err
-		}
-		if *limit < 0 || *offset < 0 {
-			return errors.New("tag list: --limit and --offset must be >= 0")
-		}
-		client, err := newLinkdingClient()
-		if err != nil {
-			return err
-		}
-		p, err := listPage(client, "/tags/", nil, *limit, *offset)
-		if err != nil {
-			return err
-		}
-		tags, err := trimTagPage(p)
-		if err != nil {
-			return err
-		}
-		return writeJSON(tags)
-	default:
-		return fmt.Errorf("tag: unknown subcommand %q", args[0])
-	}
-}
+func runTag(args []string) error { return runResource("tag", args) }

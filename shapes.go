@@ -52,6 +52,48 @@ type tag struct {
 	DateAdded string `json:"date_added"`
 }
 
+// The following shapes validate known field types without trimming resource
+// objects. Unknown fields remain in the raw JSON returned to callers.
+type rawBundle struct {
+	ID           int64  `json:"id"`
+	Name         string `json:"name"`
+	Search       string `json:"search"`
+	AnyTags      string `json:"any_tags"`
+	AllTags      string `json:"all_tags"`
+	ExcludedTags string `json:"excluded_tags"`
+	FilterUnread string `json:"filter_unread"`
+	FilterShared string `json:"filter_shared"`
+	Order        int64  `json:"order"`
+	DateCreated  string `json:"date_created"`
+	DateModified string `json:"date_modified"`
+}
+
+type rawAsset struct {
+	ID          int64  `json:"id"`
+	Bookmark    int64  `json:"bookmark"`
+	DateCreated string `json:"date_created"`
+	FileSize    int64  `json:"file_size"`
+	AssetType   string `json:"asset_type"`
+	ContentType string `json:"content_type"`
+	DisplayName string `json:"display_name"`
+	Status      string `json:"status"`
+}
+
+type rawProfile struct {
+	Theme                 string                     `json:"theme"`
+	BookmarkDateDisplay   string                     `json:"bookmark_date_display"`
+	BookmarkLinkTarget    string                     `json:"bookmark_link_target"`
+	WebArchiveIntegration string                     `json:"web_archive_integration"`
+	TagSearch             string                     `json:"tag_search"`
+	EnableSharing         bool                       `json:"enable_sharing"`
+	EnablePublicSharing   bool                       `json:"enable_public_sharing"`
+	EnableFavicons        bool                       `json:"enable_favicons"`
+	DisplayURL            bool                       `json:"display_url"`
+	PermanentNotes        bool                       `json:"permanent_notes"`
+	SearchPreferences     map[string]json.RawMessage `json:"search_preferences"`
+	Version               string                     `json:"version"`
+}
+
 // page is linkding's list envelope. results is decoded lazily so the same type serves
 // bookmarks and tags, and so --full can pass the raw objects through untouched.
 type page struct {

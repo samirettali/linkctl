@@ -25,9 +25,10 @@ input on this repository, the way `miniflux` is.
 
 ## Status
 
-Scope is what the Python wrapper it replaced covered: bookmarks (list, get, check, add, update,
-delete, archive, unarchive) and `tag list`. Bundles, assets, tag creation and the user profile
-are deliberately left for later.
+Public user-facing API coverage targets linkding v1.47.0: bookmarks, shared reads, tags,
+bundles, bookmark assets, SingleFile uploads and read-only user profile. Administration and
+internal web/UI routes are intentionally excluded. See [API coverage](docs/api-coverage.md)
+for the endpoint matrix, exact upstream sources, compatibility and file-transfer contracts.
 
 ## Conventions
 
@@ -109,4 +110,11 @@ are deliberately left for later.
   HTTP calls time out after 60 seconds. Redirects are limited to 10 hops and must keep the
   original scheme, host, port and method, with no URL credentials. Malformed or rejected
   redirect locations are not included in errors, since they can contain secrets.
-- Tags cannot be deleted through the API, so a smoke test that creates one leaves it behind.
+- Current upstream supports tag deletion (`DestroyModelMixin`); older deployments may not.
+  Tags, bundles and assets use the existing per-ID deletion/auth semantics. Their JSON objects
+  and the user profile are already small and pass through unchanged, including unknown fields.
+- File inputs/outputs are explicit paths. Uploads spool multipart to private temporary files;
+  downloads stream to a private sibling and publish by no-clobber hard link. Never infer local
+  paths from server filenames or replay uploads on redirects. See the coverage document above.
+- Archived means Samir's functional collection, not consumed queue items. Unarchived is the
+  reading/watching queue. Functional links in that queue should be archived, not deleted.

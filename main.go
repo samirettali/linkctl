@@ -49,6 +49,19 @@ func run(args []string) error {
 		return runBookmark(args[1:])
 	case "tag":
 		return runTag(args[1:])
+	case "bundle":
+		return runResource("bundle", args[1:])
+	case "user":
+		if len(args) < 2 {
+			return errors.New("user: subcommand required (profile)")
+		}
+		if isHelp(args[1]) {
+			return errHelp
+		}
+		if args[1] != "profile" {
+			return fmt.Errorf("user: unknown subcommand %q", args[1])
+		}
+		return runProfile(args[2:])
 	case "version", "--version", "-v":
 		fs := newFlagSet("version")
 		if err := parseFlags(fs, args[1:]); err != nil {
@@ -82,8 +95,34 @@ Usage:
   linkctl bookmark delete ID...
   linkctl bookmark archive ID...
   linkctl bookmark unarchive ID...
-  linkctl tag list [--limit N] [--offset N]
+  linkctl tag list [--limit N] [--offset N] [--full]
+  linkctl tag get ID [--full]
+  linkctl tag create NAME [--full]
+  linkctl tag delete ID...
+  linkctl bundle list [--limit N] [--offset N] [--full]
+  linkctl bundle get ID [--full]
+  linkctl bundle create --name S [BUNDLE FIELDS] [--full]
+  linkctl bundle update ID [BUNDLE FIELDS] [--full]
+  linkctl bundle delete ID...
+  linkctl bookmark asset list BOOKMARK_ID [--limit N] [--offset N] [--full]
+  linkctl bookmark asset get BOOKMARK_ID ASSET_ID [--full]
+  linkctl bookmark asset upload BOOKMARK_ID --input PATH [--full]
+  linkctl bookmark asset download BOOKMARK_ID ASSET_ID --output PATH
+  linkctl bookmark asset delete BOOKMARK_ID ASSET_ID...
+  linkctl bookmark singlefile URL --input PATH
+  linkctl user profile [--full]
   linkctl version
+
+Additional bookmark options:
+  list: --shared-collection [--user USERNAME], --bundle ID, --sort SORT,
+        --filter-unread off|yes|no, --filter-shared off|yes|no
+  check: --ignore-cache
+  add/update: --clear-tags, --archived|--no-archived,
+              --date-added RFC3339, --date-modified RFC3339
+  add: --no-snapshot
+Bundle fields:
+  --name S, --search S, --any-tags S, --all-tags S, --excluded-tags S,
+  --filter-unread off|yes|no, --filter-shared off|yes|no, --order N
 
 Configuration:
   LINKDING_URL     base URL of the instance (https://links.example.com)

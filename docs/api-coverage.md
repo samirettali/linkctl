@@ -103,8 +103,13 @@ web UI's separate drag-and-drop reorder behavior.
 
 ## File transfers
 
-Uploads accept an existing regular file, reject symlinks/devices/directories,
-spool multipart into a private temporary file, then send one request. MIME type
+Uploads are supported only on Unix platforms (including macOS and Linux); other
+platforms fail closed with a clear unsupported-platform error before any upload
+request. Other commands remain buildable. Uploads accept an existing regular file,
+reject symlinks/devices/directories, spool multipart into a private temporary file,
+then send one request. Opening uses nonblocking/no-follow flags and validates the
+opened descriptor against the precheck, so a substituted FIFO cannot block the
+open and a substituted final symlink is rejected atomically. MIME type
 comes from the filename extension (otherwise `application/octet-stream`); only
 the basename is sent as the filename. Spooling uses disk rather than unbounded
 RAM or a pipe goroutine. Temporary files and HTTP bodies are closed/removed on

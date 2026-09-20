@@ -113,8 +113,10 @@ for the endpoint matrix, exact upstream sources, compatibility and file-transfer
 - Current upstream supports tag deletion (`DestroyModelMixin`); older deployments may not.
   Tags, bundles and assets use the existing per-ID deletion/auth semantics. Their JSON objects
   and the user profile are already small and pass through unchanged, including unknown fields.
-- File inputs/outputs are explicit paths. Uploads spool multipart to private temporary files;
-  downloads stream to a private sibling and publish by no-clobber hard link. Never infer local
-  paths from server filenames or replay uploads on redirects. See the coverage document above.
+- File inputs/outputs are explicit paths. Uploads use Unix-only nonblocking/no-follow open
+  plus descriptor/identity checks and spool multipart to private temporary files; non-Unix
+  uploads fail closed (user-approved portability boundary). Downloads stream to a private
+  sibling and publish by no-clobber hard link. Never infer local paths from server filenames
+  or replay uploads on redirects. See the coverage document above.
 - Archived means Samir's functional collection, not consumed queue items. Unarchived is the
   reading/watching queue. Functional links in that queue should be archived, not deleted.

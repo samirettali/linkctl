@@ -152,18 +152,11 @@ func (c *linkdingClient) upload(path, input string, fields map[string]string) (j
 	if !info.Mode().IsRegular() {
 		return nil, errors.New("input must be a regular file, not a symlink or device")
 	}
-	source, err := os.Open(input)
+	source, err := openUploadInput(input, info)
 	if err != nil {
 		return nil, err
 	}
 	defer source.Close()
-	opened, err := source.Stat()
-	if err != nil {
-		return nil, err
-	}
-	if !opened.Mode().IsRegular() || !os.SameFile(info, opened) {
-		return nil, errors.New("input changed while opening")
-	}
 	spool, err := os.CreateTemp("", "linkctl-upload-*")
 	if err != nil {
 		return nil, err
@@ -213,6 +206,26 @@ func (c *linkdingClient) upload(path, input string, fields map[string]string) (j
 	}
 	defer resp.Body.Close()
 	return readJSONResponse(resp)
+}
+
+// openUploadInput checks the actual descriptor, not just the earlier pathname
+// metadata. openUploadFile enforces nonblocking/no-follow opening on Unix and
+// fails closed on platforms without that implementation.
+func openUploadInput(path string, expected os.FileInfo) (*os.File, error) {
+	file, err := openUploadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("opening input safely: %w", err)
+	}
+	opened, err := file.Stat()
+	if err != nil {
+		file.Close()
+		return nil, err
+	}
+	if !opened.Mode().IsRegular() || !os.SameFile(expected, opened) {
+		file.Close()
+		return nil, errors.New("input changed while opening")
+	}
+	return file, nil
 }
 
 // A private temporary sibling is published with an atomic no-clobber hard link.

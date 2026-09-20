@@ -135,7 +135,11 @@ linkctl bookmark asset delete 412 9 10
 linkctl bookmark singlefile https://example.com/post --input /path/to/snapshot.html
 ```
 
-Uploads require regular files (no symlinks/devices). Downloads require an explicit
+Uploads require regular files (no symlinks/devices) and Unix (including macOS and
+Linux). Non-Unix uploads fail closed before any upload request with an unsupported
+platform error; do not bypass it or fall back to an unsafe upload method. Unix
+opening is nonblocking/no-follow and checks the actual descriptor against the
+precheck to reject substituted files safely. Downloads require an explicit
 new path whose parent exists, never overwrite, and print a JSON receipt. Server
 filenames never pick the local destination. Assets delete permanently.
 SingleFile **adds a snapshot and creates a bookmark if absent**, potentially

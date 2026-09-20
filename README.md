@@ -84,8 +84,12 @@ accepted on their JSON read/create/update commands. Bundle tag fields are
 space-separated strings; empty strings clear fields on PATCH, omission preserves
 them. Bundle `off` disables a filter; it does not mean false.
 
-File commands require explicit paths. Uploads accept regular files only. Downloads
-never overwrite an existing file or symlink, ignore server-suggested filenames,
+File commands require explicit paths. Uploads accept regular files only and are
+supported on Unix (including macOS and Linux); non-Unix uploads fail closed with a
+clear unsupported-platform error before any upload request. Nonblocking/no-follow
+opening rejects substituted FIFOs or symlinks safely. Other commands remain
+buildable on non-Unix platforms. Downloads never overwrite an existing file or
+symlink, ignore server-suggested filenames,
 and print a JSON receipt rather than bytes. SingleFile uploads **add a snapshot
 and create a bookmark if the URL is absent**. No automatic mutation retries or
 implicit deletion occur. Tag deletion removes associations, bundle deletion

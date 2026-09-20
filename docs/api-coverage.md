@@ -115,6 +115,8 @@ the basename is sent as the filename. Spooling uses disk rather than unbounded
 RAM or a pipe goroutine. Temporary files and HTTP bodies are closed/removed on
 failure and success. Ensure temporary storage has room for the complete upload.
 Uploads are not replayed through 307/308 redirects; configure the canonical URL.
+Transport errors omit URL-bearing wrappers even after an accepted redirect, while
+preserving the underlying network reason and timeout identity.
 
 Downloads stream into a private temporary sibling, then publish atomically with
 a no-clobber hard link. An existing file, directory or symlink at the output path

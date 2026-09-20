@@ -243,6 +243,16 @@ func (client *linkdingClient) do(req *http.Request) (*http.Response, error) {
 		if errors.As(err, &redirectErr) {
 			return nil, fmt.Errorf("calling linkding: %w", redirectErr)
 		}
+		// Even an allowed same-origin redirect can carry secrets in its path
+		// or query. Client.Do includes its final URL in transport errors.
+		// Strip URL-bearing wrappers, retaining network/timeout identity.
+		for {
+			var urlErr *url.Error
+			if !errors.As(err, &urlErr) {
+				break
+			}
+			err = urlErr.Err
+		}
 		return nil, fmt.Errorf("calling linkding: %w", err)
 	}
 	if resp.StatusCode >= 200 && resp.StatusCode <= 299 {

@@ -28,7 +28,7 @@ tag       {id, name, date_added}
 {"error": "linkding is not configured", "fix": "export LINKDING_URL and LINKDING_TOKEN, or ...", "details": "rbw is locked: run 'rbw unlock'"}
 ```
 
-Relay the `fix` to the user; unlocking the vault cannot be done for them.
+Relay the `fix` and relevant `details` to the user; unlocking the vault cannot be done for them. Vault commands share a 10-second deadline. HTTP calls time out after 60 seconds and only follow redirects that preserve the scheme, host, port and method without URL credentials. A refused redirect is an error, not a successful save.
 
 ## Search
 
@@ -64,9 +64,11 @@ linkctl bookmark archive 412 413
 linkctl bookmark unarchive 412
 ```
 
-`add` scrapes the page for title and description unless `--no-scrape` is given, and answers the trimmed bookmark. **A URL that is already saved is refused**, with the existing ID in the error: change it with `update`. `--replace` forces the save, and linkding then overwrites title, description, notes, unread and shared with what was sent and replaces the tag list, so only use it when that is the intent. `update` sends only the flags given, but **`--tag` replaces the whole tag list**: read the bookmark first and repeat the tags to keep. `--unread`/`--no-unread` and `--shared`/`--no-shared` set the flag either way; neither leaves it alone.
+`add` scrapes the page for title and description unless `--no-scrape` is given, and answers the trimmed bookmark. **A URL that is already saved is refused**, with the existing ID in the error: change it with `update`. `--replace` forces the save, and linkding then overwrites title, description, notes, unread and shared with what was sent and replaces the tag list, so only use it when that is the intent. `update` sends only the flags given, but **`--tag` replaces the whole tag list**: read the bookmark first and repeat the tags to keep. `--unread`/`--no-unread` and `--shared`/`--no-shared` set the flag either way; neither leaves it alone. Explicit values are honored: `--unread=false` sends false and `--no-unread=false` sends true (likewise for shared). Both flag names together are rejected regardless of values.
 
-`archive`, `unarchive` and `delete` take several IDs and answer `{"archived"|"unarchived"|"deleted": [ids], "failed": [{"id", "error"}]}`; they go on past a per-bookmark failure, so report `failed` whenever it is non-empty. Take IDs from a previous `list`, `get` or `check`, never from memory.
+The duplicate check fails closed on malformed responses, but the check and save are not atomic: concurrent writers can still race it. Never assume a failed or timed-out mutation had no effect; inspect the bookmark before retrying.
+
+`archive`, `unarchive` and `delete` take several IDs and answer `{"archived"|"unarchived"|"deleted": [ids], "failed": [{"id", "error"}]}`; they go on past a per-bookmark failure and still exit 0, so report `failed` whenever it is non-empty. A 401 instead stops immediately, exits 1 and reports the authentication remedy on stderr; earlier successes are not printed, so re-check state before retrying. Take IDs from a previous `list`, `get` or `check`, never from memory.
 
 `linkctl bookmark delete ID...` removes bookmarks permanently. Ask before running it.
 

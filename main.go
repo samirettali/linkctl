@@ -50,6 +50,13 @@ func run(args []string) error {
 	case "tag":
 		return runTag(args[1:])
 	case "version", "--version", "-v":
+		fs := newFlagSet("version")
+		if err := parseFlags(fs, args[1:]); err != nil {
+			return err
+		}
+		if err := noArgs(fs); err != nil {
+			return err
+		}
 		return writeJSON(map[string]string{"version": version})
 	case "help", "--help", "-h":
 		printUsage()

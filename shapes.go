@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 )
@@ -95,9 +96,24 @@ func trimBookmark(raw rawBookmark) bookmark {
 }
 
 func decodePage(data json.RawMessage, what string) (page, error) {
+	var wire struct {
+		Count    *int            `json:"count"`
+		Next     json.RawMessage `json:"next"`
+		Previous json.RawMessage `json:"previous"`
+		Results  json.RawMessage `json:"results"`
+	}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return page{}, fmt.Errorf("decoding %s: %w", what, err)
+	}
+	if wire.Count == nil || *wire.Count < 0 || len(wire.Next) == 0 || len(wire.Previous) == 0 || len(wire.Results) == 0 {
+		return page{}, fmt.Errorf("decoding %s: expected count, next, previous and results", what)
+	}
 	var p page
 	if err := json.Unmarshal(data, &p); err != nil {
 		return page{}, fmt.Errorf("decoding %s: %w", what, err)
+	}
+	if p.Next != nil && *p.Next == "" {
+		return page{}, fmt.Errorf("decoding %s: next must be a URL or null", what)
 	}
 	if p.Results == nil {
 		p.Results = []json.RawMessage{}
@@ -109,6 +125,9 @@ func decodeBookmark(data json.RawMessage) (bookmark, error) {
 	var raw rawBookmark
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return bookmark{}, fmt.Errorf("decoding bookmark: %w", err)
+	}
+	if raw.ID <= 0 {
+		return bookmark{}, fmt.Errorf("decoding bookmark: expected a positive id")
 	}
 	return trimBookmark(raw), nil
 }
@@ -132,6 +151,9 @@ func trimTagPage(p page) (tagPage, error) {
 		if err := json.Unmarshal(raw, &t); err != nil {
 			return tagPage{}, fmt.Errorf("decoding tag: %w", err)
 		}
+		if t.ID <= 0 {
+			return tagPage{}, fmt.Errorf("decoding tag: expected a positive id")
+		}
 		out.Results = append(out.Results, t)
 	}
 	return out, nil
@@ -154,11 +176,16 @@ func decodeCheck(data json.RawMessage) (checkResult, error) {
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return checkResult{}, fmt.Errorf("decoding check: %w", err)
 	}
+	// Only an explicit bookmark:null establishes that a URL is not saved. Missing
+	// fields or a null response must never allow add to overwrite an existing link.
+	if len(raw.Bookmark) == 0 {
+		return checkResult{}, fmt.Errorf("decoding check: missing bookmark field")
+	}
 	result := checkResult{Metadata: raw.Metadata, AutoTags: raw.AutoTags}
 	if result.AutoTags == nil {
 		result.AutoTags = []string{}
 	}
-	if len(raw.Bookmark) > 0 && string(raw.Bookmark) != "null" {
+	if !bytes.Equal(bytes.TrimSpace(raw.Bookmark), []byte("null")) {
 		b, err := decodeBookmark(raw.Bookmark)
 		if err != nil {
 			return checkResult{}, err

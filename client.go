@@ -207,38 +207,20 @@ func (client *linkdingClient) request(method, path string, query url.Values, bod
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "Token "+client.token)
 	req.Header.Set("Accept", "application/json")
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	resp, err := client.http.Do(req)
+	resp, err := client.do(req)
 	if err != nil {
-		var redirectErr redirectError
-		if errors.As(err, &redirectErr) {
-			return nil, fmt.Errorf("calling linkding: %w", redirectErr)
-		}
-		return nil, fmt.Errorf("calling linkding: %w", err)
+		return nil, err
 	}
 	defer resp.Body.Close()
-	var responseBody io.Reader = resp.Body
-	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		// Diagnostics only need a prefix. Successful payloads remain uncapped to
-		// preserve large notes and --limit 0's whole-library contract.
-		responseBody = io.LimitReader(resp.Body, maxErrorResponseBytes)
-	}
-	data, readErr := io.ReadAll(responseBody)
-	// A truncated error body must not discard the HTTP status or auth remedy.
-	if resp.StatusCode == http.StatusUnauthorized {
-		return nil, &authError{
-			Message: "linkding rejected the token",
-			Fix:     "generate a new token in linkding under Settings > Integrations > REST API and update LINKDING_TOKEN or the rbw entry " + rbwEntry,
-			Cause:   decodeAPIError(resp.StatusCode, data),
-		}
-	}
-	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return nil, decodeAPIError(resp.StatusCode, data)
-	}
+	return readJSONResponse(resp)
+}
+
+func readJSONResponse(resp *http.Response) (json.RawMessage, error) {
+	data, readErr := io.ReadAll(resp.Body)
 	if readErr != nil {
 		return nil, fmt.Errorf("reading linkding response: %w", readErr)
 	}
@@ -249,6 +231,30 @@ func (client *linkdingClient) request(method, path string, query url.Values, bod
 		return nil, errors.New("linkding returned invalid JSON")
 	}
 	return json.RawMessage(data), nil
+}
+
+// do is shared by JSON and file transfers. It preserves the audited redirect
+// policy and bounded diagnostics, and closes error responses itself.
+func (client *linkdingClient) do(req *http.Request) (*http.Response, error) {
+	req.Header.Set("Authorization", "Token "+client.token)
+	resp, err := client.http.Do(req)
+	if err != nil {
+		var redirectErr redirectError
+		if errors.As(err, &redirectErr) {
+			return nil, fmt.Errorf("calling linkding: %w", redirectErr)
+		}
+		return nil, fmt.Errorf("calling linkding: %w", err)
+	}
+	if resp.StatusCode >= 200 && resp.StatusCode <= 299 {
+		return resp, nil
+	}
+	defer resp.Body.Close()
+	data, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorResponseBytes))
+	cause := decodeAPIError(resp.StatusCode, data)
+	if resp.StatusCode == http.StatusUnauthorized {
+		return nil, &authError{Message: "linkding rejected the token", Fix: "generate a new token in linkding under Settings > Integrations > REST API and update LINKDING_TOKEN or the rbw entry " + rbwEntry, Cause: cause}
+	}
+	return nil, cause
 }
 
 // decodeAPIError flattens the two error bodies Django REST framework produces, {"detail": "..."}

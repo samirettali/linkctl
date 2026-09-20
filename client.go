@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -79,28 +80,96 @@ func newLinkdingClient() (*linkdingClient, error) {
 	}
 	baseURL = strings.TrimRight(baseURL, "/")
 	parsed, err := url.Parse(baseURL)
-	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
-		return nil, notConfigured(fmt.Sprintf("linkding URL %q is invalid: expected http(s)://host", baseURL), err)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Hostname() == "" ||
+		parsed.User != nil || parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" || strings.Contains(baseURL, "#") {
+		// Neither the URL nor url.Parse's error is safe to print: either can contain credentials.
+		return nil, notConfigured("linkding URL is invalid: expected http(s)://host with an optional path, without user info, query or fragment", nil)
 	}
 	return &linkdingClient{
 		baseURL: baseURL,
 		token:   token,
-		http:    &http.Client{Timeout: 60 * time.Second},
+		http: &http.Client{
+			Timeout:       60 * time.Second,
+			CheckRedirect: checkRedirect,
+			Transport:     redirectTransport{http.DefaultTransport},
+		},
 	}, nil
+}
+
+// redirectError contains no URL data: net/http's outer url.Error can include the
+// raw Location (including passwords), so request reports only this safe reason.
+type redirectError string
+
+func (err redirectError) Error() string { return string(err) }
+
+// net/http parses Location before invoking CheckRedirect and includes the raw
+// header in parse errors. Reject malformed locations before that can happen.
+type redirectTransport struct{ base http.RoundTripper }
+
+func (t redirectTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := t.base.RoundTrip(req)
+	if err != nil {
+		return resp, err
+	}
+	switch resp.StatusCode {
+	case 301, 302, 303, 307, 308:
+		if location := resp.Header.Get("Location"); location != "" {
+			if _, err := req.URL.Parse(location); err != nil {
+				resp.Body.Close()
+				return nil, redirectError("refusing linkding redirect with an invalid Location header")
+			}
+		}
+	}
+	return resp, nil
+}
+
+// checkRedirect keeps credentials on their original origin and prevents redirects
+// from silently changing a mutation into a successful-looking GET.
+func checkRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) >= 10 {
+		return redirectError("stopped after 10 redirects")
+	}
+	original := via[0]
+	if req.URL.Scheme != original.URL.Scheme || !strings.EqualFold(req.URL.Host, original.URL.Host) || req.URL.User != nil {
+		return redirectError("refusing linkding redirect to a different origin or URL credentials")
+	}
+	if req.Method != original.Method {
+		return redirectError("refusing linkding redirect that changes the request method")
+	}
+	return nil
 }
 
 // readVault returns the base URL and token stored in the rbw entry. It never prompts:
 // a locked vault is an error, since pinentry has no terminal to ask on from an agent.
 func readVault() (string, string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return readVaultContext(ctx)
+}
+
+func vaultCommand(ctx context.Context, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, "rbw", args...)
+	// Bound waiting for inherited output pipes after the command exits, too.
+	cmd.WaitDelay = time.Second
+	return cmd
+}
+
+func readVaultContext(ctx context.Context) (string, string, error) {
 	if _, err := exec.LookPath("rbw"); err != nil {
 		return "", "", errors.New("rbw is not installed")
 	}
-	if err := exec.Command("rbw", "unlocked").Run(); err != nil {
+	if err := vaultCommand(ctx, "unlocked").Run(); err != nil {
+		if ctx.Err() != nil {
+			return "", "", fmt.Errorf("checking rbw vault: %w", ctx.Err())
+		}
 		return "", "", errors.New("rbw is locked: run 'rbw unlock'")
 	}
-	raw, err := exec.Command("rbw", "get", "--raw", rbwEntry).Output()
+	raw, err := vaultCommand(ctx, "get", "--raw", rbwEntry).Output()
 	if err != nil {
-		return "", "", fmt.Errorf("rbw entry %q not found", rbwEntry)
+		if ctx.Err() != nil {
+			return "", "", fmt.Errorf("reading rbw entry: %w", ctx.Err())
+		}
+		return "", "", fmt.Errorf("rbw entry %q could not be read", rbwEntry)
 	}
 	var entry struct {
 		Data struct {
@@ -145,13 +214,21 @@ func (client *linkdingClient) request(method, path string, query url.Values, bod
 	}
 	resp, err := client.http.Do(req)
 	if err != nil {
+		var redirectErr redirectError
+		if errors.As(err, &redirectErr) {
+			return nil, fmt.Errorf("calling linkding: %w", redirectErr)
+		}
 		return nil, fmt.Errorf("calling linkding: %w", err)
 	}
 	defer resp.Body.Close()
-	data, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("reading linkding response: %w", err)
+	var responseBody io.Reader = resp.Body
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		// Diagnostics only need a prefix. Successful payloads remain uncapped to
+		// preserve large notes and --limit 0's whole-library contract.
+		responseBody = io.LimitReader(resp.Body, maxErrorResponseBytes)
 	}
+	data, readErr := io.ReadAll(responseBody)
+	// A truncated error body must not discard the HTTP status or auth remedy.
 	if resp.StatusCode == http.StatusUnauthorized {
 		return nil, &authError{
 			Message: "linkding rejected the token",
@@ -162,8 +239,14 @@ func (client *linkdingClient) request(method, path string, query url.Values, bod
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		return nil, decodeAPIError(resp.StatusCode, data)
 	}
+	if readErr != nil {
+		return nil, fmt.Errorf("reading linkding response: %w", readErr)
+	}
 	if len(bytes.TrimSpace(data)) == 0 {
 		return nil, nil
+	}
+	if !json.Valid(data) {
+		return nil, errors.New("linkding returned invalid JSON")
 	}
 	return json.RawMessage(data), nil
 }
@@ -208,7 +291,10 @@ func decodeAPIError(status int, data []byte) error {
 	return apiErr
 }
 
-const maxErrorDetails = 300
+const (
+	maxErrorDetails       = 300
+	maxErrorResponseBytes = 16 << 10
+)
 
 func writeJSON(value any) error {
 	encoder := json.NewEncoder(os.Stdout)
